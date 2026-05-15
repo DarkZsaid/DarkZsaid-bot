@@ -113,9 +113,20 @@ systemctl enable "$SERVICE_NAME"
 systemctl restart "$SERVICE_NAME"
 
 echo ""
+echo -e "${CYAN}Instalando comando darkzsaidbot...${RESET}"
+
+if [[ -f "$BOT_DIR/darkzsaidbot.sh" ]]; then
+    chmod +x "$BOT_DIR/darkzsaidbot.sh"
+    ln -sf "$BOT_DIR/darkzsaidbot.sh" /usr/local/bin/darkzsaidbot
+    chmod +x /usr/local/bin/darkzsaidbot
+fi
+
+
+echo ""
 echo -e "${VERDE}${BOLD}Bot instalado correctamente.${RESET}"
 echo ""
 echo -e "${AMARILLO}Comandos útiles:${RESET}"
 echo "systemctl status darkzsaid-bot --no-pager"
 echo "journalctl -u darkzsaid-bot -f"
+echo "darkzsaidbot"
 echo ""
