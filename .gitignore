@@ -1,0 +1,19 @@
+# Secretos
+.env
+*.env
+
+# Entorno Python
+venv/
+__pycache__/
+*.pyc
+
+# Bases de datos reales
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs y backups
+*.log
+logs/
+*.tar.gz
+*.zip
