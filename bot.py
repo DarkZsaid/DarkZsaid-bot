@@ -1,3 +1,4 @@
+import html
 import re
 import sqlite3
 import subprocess
@@ -292,16 +293,13 @@ def server_info():
 def main_menu(user_id):
     keyboard = [
         [InlineKeyboardButton("👤 Crear SSH", callback_data="create_ssh")],
-        [InlineKeyboardButton("📋 Cuentas activas", callback_data="my_accounts")],
-        [InlineKeyboardButton("ℹ️ Mi cuenta", callback_data="my_account")],
+        [
+            InlineKeyboardButton("📋 Mis cuentas", callback_data="active_accounts"),
+            InlineKeyboardButton("💳 Mi cuenta", callback_data="my_account"),
+        ],
         [InlineKeyboardButton("📡 Info servidor", callback_data="server_info")],
+        [InlineKeyboardButton("🔥 Panel DarkZsaid", callback_data="admin_panel")],
     ]
-
-    if user_id == ADMIN_ID:
-        keyboard.append(
-            [InlineKeyboardButton("👑 Panel DarkZsaid", callback_data="admin_panel")]
-        )
-
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -367,13 +365,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     user_id = update.effective_user.id
 
+    tg_name = update.effective_user.first_name or "Usuario"
+    tg_username = update.effective_user.username or "sin_usuario"
+
     text = f"""
-🤖 Bienvenido a {BOT_NAME}
+━━━━━━━━━━━━━━━━━━━━
+     ⚡ DARKZSAID SSH BOT ⚡
+  Panel automático de cuentas SSH
+       Creado por @DarkZsaid
+━━━━━━━━━━━━━━━━━━━━
 
-🆓 FREE: público para todos
-💎 VIP: autorizado por administrador
+👤 Nombre: {tg_name}
+🆔 Usuario: @{tg_username}
+💳 Créditos: 1/1 🟢
 
-Elige una opción:
+🌐 Elige acción:
+📅 Cuentas válidas por 3 días
 """
 
     await update.message.reply_text(text, reply_markup=main_menu(user_id))
@@ -390,8 +397,24 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "back":
         context.user_data.clear()
+        tg_name = query.from_user.first_name or "Usuario"
+        tg_username = query.from_user.username or "sin_usuario"
+
         await query.edit_message_text(
-            f"🤖 {BOT_NAME}\n\nElige una opción:",
+            f"""
+━━━━━━━━━━━━━━━━━━━━
+     ⚡ DARKZSAID SSH BOT ⚡
+  Panel automático de cuentas SSH
+       Creado por @DarkZsaid
+━━━━━━━━━━━━━━━━━━━━
+
+👤 Nombre: {tg_name}
+🆔 Usuario: @{tg_username}
+💳 Créditos: 1/1 🟢
+
+🌐 Elige acción:
+📅 Cuentas válidas por 3 días
+""",
             reply_markup=main_menu(user_id),
         )
 
@@ -631,57 +654,81 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+
+def get_user_accounts(telegram_id):
+    db_file = globals().get("DB_FILE") or globals().get("DB_PATH") or globals().get("DATABASE") or "bot.db"
+
+    conn = sqlite3.connect(db_file)
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
+            SELECT telegram_id, ssh_user, ssh_pass, plan, expire_date, max_connections
+            FROM accounts
+            WHERE telegram_id=?
+        """, (telegram_id,))
+        rows = cur.fetchall()
+    except Exception:
+        rows = []
+
+    conn.close()
+    return rows
+
+
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clean_expired_accounts()
 
     user_id = update.effective_user.id
     text = update.message.text.strip()
-
     step = context.user_data.get("step")
 
     if step == "ask_username":
-        username = text
+        username_base = text.lower()
+        prefix = "darkzsaid-"
 
-        if not valid_username(username):
+        if not valid_username(username_base):
             await update.message.reply_text(
-                "❌ Usuario inválido.\n\n"
-                "Usa solo letras, números o _.\n"
-                "Mínimo 3 y máximo 16 caracteres.",
+                """❌ Usuario inválido.
+
+Reglas:
+- mínimo 3 caracteres
+- máximo 16 caracteres
+- sin espacios
+- solo letras, números y _""",
                 reply_markup=back_menu(),
             )
             return
 
-        if linux_user_exists(username):
-            await update.message.reply_text(
-                "❌ Ese usuario ya existe. Escribe otro.",
-                reply_markup=back_menu(),
-            )
-            return
+        username = username_base if username_base.startswith(prefix) else prefix + username_base
 
         context.user_data["ssh_username"] = username
         context.user_data["step"] = "ask_password"
 
         await update.message.reply_text(
-            "🔑 Ahora escribe la contraseña SSH.\n\n"
-            "Reglas:\n"
-            "- mínimo 4 caracteres\n"
-            "- sin espacios",
+            """🔑 Ahora escribe la contraseña SSH.
+
+Reglas:
+- mínimo 4 caracteres
+- sin espacios""",
             reply_markup=back_menu(),
         )
+        return
 
     elif step == "ask_password":
         password = text
 
         if not valid_password(password):
             await update.message.reply_text(
-                "❌ Contraseña inválida.\n\n"
-                "Debe tener mínimo 4 caracteres y no puede tener espacios.",
+                """❌ Contraseña inválida.
+
+Reglas:
+- mínimo 4 caracteres
+- sin espacios""",
                 reply_markup=back_menu(),
             )
             return
 
         username = context.user_data["ssh_username"]
-
         plan = "VIP" if is_vip(user_id) else "FREE"
 
         if plan == "VIP":
@@ -693,150 +740,106 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             connections = get_setting("free_connections")
             max_accounts = get_setting("free_max_accounts")
 
-        total = count_accounts(user_id, plan)
+        accounts = get_user_accounts(user_id)
 
-        if total >= max_accounts:
+        if len(accounts) >= int(max_accounts):
             await update.message.reply_text(
-                f"❌ Ya llegaste al máximo de cuentas {plan}.\n\n"
-                f"Máximo permitido: {max_accounts}\n\n"
-                "Cuando tu cuenta venza, podrás crear otra.",
+                """❌ Ya alcanzaste el máximo de cuentas permitidas.
+
+Cuando tu cuenta venza, podrás crear otra.""",
                 reply_markup=back_menu(),
             )
             context.user_data.clear()
             return
 
-        expire_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+        expire_date = (datetime.now() + timedelta(days=int(days))).strftime("%Y-%m-%d")
 
         try:
             create_linux_user(username, password, expire_date, connections)
             save_account(user_id, username, password, plan, expire_date, connections)
 
+            dominio_flare = "bot-telegram.scionvps.fun"
+
+            try:
+                expire_show = datetime.strptime(expire_date, "%Y-%m-%d").strftime("%d/%m/%Y")
+            except Exception:
+                expire_show = expire_date
+
+            mensaje_cuenta = f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ CUENTA CREADA CON ÉXITO
+Creado por @DarkZsaid
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+👤 CREDENCIALES:
+Usuario:  {username}
+Password: {password}
+
+📅 EXPIRACIÓN:
+Fecha: {expire_show} ({days} días)
+Conexiones: {connections}
+Plan: {plan}
+
+🌐 SERVIDOR:
+IP:             {HOST}
+Dominio Flare:  {dominio_flare}
+
+🔌 PUERTOS ACTIVOS:
+• SSH: {SSH_PORT}                  • System-DNS: 53
+• SOCKS/PYTHON3: 80        • WEB/NGinx: 81
+• SSL/TLS: {SSL_PORT}             • UDP-Custom: {UDP_CUSTOM}
+• BadVPN: 7200             • BadVPN: 7300
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📱 CONFIGURACIONES DE CONEXIÓN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔹 UDP HTTP Custom:
+{HOST}:1-65535@{username}:{password}
+
+🔹 SSL/TLS (SNI):
+{HOST}:{SSL_PORT}@{username}:{password}
+
+🔹 SOCKS/PYTHON3 Puerto 80 (IP):
+{HOST}:80@{username}:{password}
+
+🔹 SSH Dominio Cloudflare:
+{dominio_flare}:80@{username}:{password}
+
+🔹 SSH Cloudflare SSL/TLS:
+{dominio_flare}:443@{username}:{password}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NS: —
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💳 Créditos restantes: 0/1
+⏰ Regen: +1 crédito cada 24h
+Creado por @DarkZsaid
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
             await update.message.reply_text(
-                f"""
-✅ Cuenta SSH creada correctamente
-
-👤 Usuario: {username}
-🔑 Password: {password}
-
-📅 Expira: {days} días
-📆 Fecha: {expire_date}
-🔌 Conexiones: {connections}
-📦 Plan: {plan}
-
-🌐 Host: {HOST}
-🚪 SSH: {SSH_PORT}
-🌍 WebSocket: {WS_PORT}
-🔐 SSL/TLS: {SSL_PORT}
-🎮 UDP CUSTOM: {UDP_CUSTOM}
-""",
-                reply_markup=back_menu(),
+                f"<pre>{html.escape(mensaje_cuenta)}</pre>",
+                parse_mode="HTML",
             )
 
         except Exception as e:
             await update.message.reply_text(
-                f"❌ Error creando cuenta:\n{e}",
+                f"""❌ Error creando cuenta:
+{e}""",
                 reply_markup=back_menu(),
             )
 
         context.user_data.clear()
-
-    elif step in [
-        "set_free_days",
-        "set_free_connections",
-        "set_free_max_accounts",
-        "set_vip_days",
-        "set_vip_connections",
-        "set_vip_max_accounts",
-    ]:
-        if user_id != ADMIN_ID:
-            return
-
-        if not text.isdigit():
-            await update.message.reply_text(
-                "❌ Escribe solo números.",
-                reply_markup=back_admin_menu(),
-            )
-            return
-
-        value = int(text)
-
-        if value <= 0:
-            await update.message.reply_text(
-                "❌ El número debe ser mayor que 0.",
-                reply_markup=back_admin_menu(),
-            )
-            return
-
-        setting_name = step.replace("set_", "")
-        set_setting(setting_name, value)
-
-        await update.message.reply_text(
-            f"✅ Configuración actualizada:\n\n{setting_name} = {value}",
-            reply_markup=back_admin_menu(),
-        )
-        context.user_data.clear()
-
-    elif step == "add_vip":
-        if user_id != ADMIN_ID:
-            return
-
-        if not text.isdigit():
-            await update.message.reply_text(
-                "❌ Escribe un ID válido.",
-                reply_markup=back_admin_menu(),
-            )
-            return
-
-        add_vip(int(text))
-
-        await update.message.reply_text(
-            f"✅ Usuario {text} ahora es VIP.",
-            reply_markup=back_admin_menu(),
-        )
-        context.user_data.clear()
-
-    elif step == "remove_vip":
-        if user_id != ADMIN_ID:
-            return
-
-        if not text.isdigit():
-            await update.message.reply_text(
-                "❌ Escribe un ID válido.",
-                reply_markup=back_admin_menu(),
-            )
-            return
-
-        remove_vip(int(text))
-
-        await update.message.reply_text(
-            f"✅ Usuario {text} ya no es VIP.",
-            reply_markup=back_admin_menu(),
-        )
-        context.user_data.clear()
-
-    elif step == "delete_ssh":
-        if user_id != ADMIN_ID:
-            return
-
-        username = text
-
-        delete_linux_user(username)
-        delete_account_db(username)
-
-        await update.message.reply_text(
-            f"✅ Usuario SSH eliminado: {username}",
-            reply_markup=back_admin_menu(),
-        )
-        context.user_data.clear()
+        return
 
     else:
-        await update.message.reply_text(
-            f"🤖 {BOT_NAME}\n\nUsa /start para abrir el menú.",
-            reply_markup=main_menu(user_id),
-        )
+        await update.message.reply_text("🤖 Usa /start para abrir el menú.")
+        return
 
 
 def main():
+
     init_db()
     update_db_columns()
     clean_expired_accounts()
