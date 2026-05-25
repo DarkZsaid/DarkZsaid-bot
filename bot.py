@@ -290,16 +290,55 @@ def server_info():
 """
 
 
+
+def is_admin_user(telegram_id):
+    try:
+        telegram_id = int(telegram_id)
+    except Exception:
+        return False
+
+    admins = []
+
+    for name in ("ADMIN_ID", "OWNER_ID"):
+        val = globals().get(name)
+        if val:
+            try:
+                admins.append(int(val))
+            except Exception:
+                pass
+
+    val = globals().get("ADMIN_IDS")
+    if val:
+        if isinstance(val, (list, tuple, set)):
+            for x in val:
+                try:
+                    admins.append(int(x))
+                except Exception:
+                    pass
+        else:
+            for x in str(val).replace(";", ",").split(","):
+                x = x.strip()
+                if x:
+                    try:
+                        admins.append(int(x))
+                    except Exception:
+                        pass
+
+    return telegram_id in admins
+
+
 def main_menu(user_id):
     keyboard = [
         [InlineKeyboardButton("👤 Crear SSH", callback_data="create_ssh")],
         [
-            InlineKeyboardButton("📋 Mis cuentas", callback_data="active_accounts"),
-            InlineKeyboardButton("💳 Mi cuenta", callback_data="my_account"),
+            InlineKeyboardButton("📋 Mi cuenta", callback_data="active_accounts"),
+            InlineKeyboardButton("💳 Tus créditos", callback_data="my_account"),
         ],
-        [InlineKeyboardButton("📡 Info servidor", callback_data="server_info")],
-        [InlineKeyboardButton("🔥 Panel DarkZsaid", callback_data="admin_panel")],
+        [InlineKeyboardButton("🔄 Renovar cuenta", callback_data="renew_account")],
     ]
+    if is_admin_user(user_id):
+        keyboard.append([InlineKeyboardButton("🔥 Panel DarkZsaid", callback_data="admin_panel")])
+
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -332,7 +371,7 @@ def admin_menu():
         ],
         [
             InlineKeyboardButton("🗑 Eliminar SSH", callback_data="delete_ssh"),
-            InlineKeyboardButton("📡 Info servidor", callback_data="server_info"),
+            InlineKeyboardButton("🔄 Renovar cuenta", callback_data="renew_account"),
         ],
         [InlineKeyboardButton("🏠 Menú principal", callback_data="back")],
     ]
@@ -360,10 +399,321 @@ def vip_config_menu():
     return InlineKeyboardMarkup(keyboard)
 
 
+
+
+
+def get_credit_status(telegram_id):
+    try:
+        if is_admin_user(telegram_id):
+            return "1/1 🟢"
+    except Exception:
+        pass
+
+    try:
+        accounts = get_user_accounts(telegram_id)
+        if len(accounts) >= 1:
+            return "0/1 ⚫"
+        return "1/1 🟢"
+    except Exception:
+        return "1/1 🟢"
+
+
+    try:
+        accounts = get_user_accounts(telegram_id)
+        if (not is_admin_user(user_id)) and len(accounts) >= 1:
+            return "0/1 ⚫"
+        return "1/1 🟢"
+    except Exception:
+        return "1/1 🟢"
+
+
+
+
+def get_all_registered_ssh_accounts():
+    import sqlite3
+    import os
+    import glob
+
+    candidates = []
+
+    for var in ("DB_FILE", "DB_PATH", "DATABASE", "DB_NAME"):
+        val = globals().get(var)
+        if val:
+            candidates.append(str(val))
+
+    candidates += glob.glob("/opt/darkzsaid-bot/*.db")
+
+    seen = []
+    for db_file in candidates:
+        if db_file and db_file not in seen:
+            seen.append(db_file)
+
+    for db_file in seen:
+        if not os.path.exists(db_file):
+            continue
+
+        try:
+            conn = sqlite3.connect(db_file)
+            cur = conn.cursor()
+
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'")
+            if not cur.fetchone():
+                conn.close()
+                continue
+
+            cur.execute("PRAGMA table_info(accounts)")
+            cols = [row[1] for row in cur.fetchall()]
+
+            if "ssh_user" not in cols:
+                conn.close()
+                continue
+
+            select_cols = ["ssh_user"]
+            if "ssh_pass" in cols:
+                select_cols.append("ssh_pass")
+            if "expire_date" in cols:
+                select_cols.append("expire_date")
+            if "plan" in cols:
+                select_cols.append("plan")
+
+            cur.execute(f"SELECT {', '.join(select_cols)} FROM accounts ORDER BY ssh_user ASC")
+            rows = cur.fetchall()
+            conn.close()
+
+            users = []
+            for row in rows:
+                item = {}
+                for i, col in enumerate(select_cols):
+                    item[col] = row[i]
+                users.append(item)
+
+            return users
+
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            continue
+
+    return []
+
+
+def build_delete_ssh_text_and_menu():
+    users = get_all_registered_ssh_accounts()
+
+    if not users:
+        text = "🗑 ELIMINAR SSH\n\nNo hay cuentas registradas."
+        keyboard = [
+            [InlineKeyboardButton("⬅️ Volver al panel", callback_data="admin_panel")]
+        ]
+        return text, InlineKeyboardMarkup(keyboard)
+
+    lines = ["🗑 ELIMINAR SSH", "", "Selecciona el número del usuario que deseas borrar:", ""]
+
+    keyboard = []
+
+    for i, u in enumerate(users, start=1):
+        ssh_user = u.get("ssh_user", "")
+        expire = u.get("expire_date", "-")
+        plan = u.get("plan", "-")
+
+        lines.append(f"[{i}] {ssh_user} | {plan} | vence: {expire}")
+
+        keyboard.append([
+            InlineKeyboardButton(f"[{i}] 🗑 {ssh_user}", callback_data=f"delssh:{ssh_user}")
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton("🧨 Borrar todas las cuentas registradas", callback_data="delete_all_ssh")
+    ])
+    keyboard.append([
+        InlineKeyboardButton("⬅️ Volver al panel", callback_data="admin_panel")
+    ])
+
+    return "\\n".join(lines), InlineKeyboardMarkup(keyboard)
+
+
+def delete_registered_ssh_user(ssh_user):
+    # Borra de Linux y de la base del bot. No toca root ni servicios SSH.
+    delete_linux_user(ssh_user)
+    delete_account_db(ssh_user)
+
+
+def delete_all_registered_ssh_users():
+    users = get_all_registered_ssh_accounts()
+    deleted = []
+
+    for u in users:
+        ssh_user = u.get("ssh_user", "").strip()
+
+        if not ssh_user:
+            continue
+
+        # Protección básica para no tocar usuarios del sistema por accidente
+        if ssh_user in ("root", "ubuntu", "admin"):
+            continue
+
+        try:
+            delete_registered_ssh_user(ssh_user)
+            deleted.append(ssh_user)
+        except Exception:
+            pass
+
+    return deleted
+
+
+
+def get_active_account_remaining_text(telegram_id):
+    from datetime import datetime
+
+    try:
+        accounts = get_user_accounts(telegram_id)
+    except Exception:
+        accounts = []
+
+    if not accounts:
+        return None, "No tienes una cuenta SSH activa."
+
+    row = accounts[0]
+
+    ssh_user = "-"
+    expire_date = "-"
+
+    try:
+        # Si viene como tupla: telegram_id, ssh_user, ssh_pass, plan, expire_date, max_connections
+        ssh_user = row[1]
+        expire_date = row[4]
+    except Exception:
+        try:
+            ssh_user = row.get("ssh_user", "-")
+            expire_date = row.get("expire_date", "-")
+        except Exception:
+            pass
+
+    try:
+        exp = datetime.strptime(str(expire_date), "%Y-%m-%d")
+        now = datetime.now()
+        diff = exp - now
+
+        if diff.total_seconds() <= 0:
+            restante = "ya venció"
+        else:
+            horas = int(diff.total_seconds() // 3600)
+            minutos = int((diff.total_seconds() % 3600) // 60)
+            restante = f"{horas}h {minutos}m"
+    except Exception:
+        restante = "no disponible"
+
+    msg = f"""🔄 RENOVAR CUENTA
+
+👤 Usuario activo: {ssh_user}
+📅 Vence: {expire_date}
+⏳ Tiempo restante: {restante}
+
+Por ahora tu cuenta sigue activa.
+Cuando venza, podrás crear o renovar otra cuenta."""
+    return ssh_user, msg
+
+
+
+def format_remaining_from_expire(expire_date):
+    from datetime import datetime
+
+    try:
+        exp = datetime.strptime(str(expire_date), "%Y-%m-%d")
+        now = datetime.now()
+        diff = exp - now
+
+        if diff.total_seconds() <= 0:
+            return "ya venció"
+
+        horas = int(diff.total_seconds() // 3600)
+        minutos = int((diff.total_seconds() % 3600) // 60)
+
+        if horas >= 24:
+            dias = horas // 24
+            horas_rest = horas % 24
+            return f"{dias}d {horas_rest}h {minutos}m"
+
+        return f"{horas}h {minutos}m"
+    except Exception:
+        return "no disponible"
+
+
+def build_active_accounts_text(telegram_id):
+    accounts = get_user_accounts(telegram_id)
+
+    if not accounts:
+        return """📋 TUS USUARIOS SSH ACTIVOS
+
+No tienes usuarios SSH activos.
+
+Usa /start y toca Crear SSH para crear una cuenta."""
+
+    lines = ["📋 TUS USUARIOS SSH ACTIVOS", ""]
+
+    for i, row in enumerate(accounts, start=1):
+        try:
+            ssh_user = row[1]
+            ssh_pass = row[2]
+            plan = row[3]
+            expire_date = row[4]
+            max_connections = row[5]
+        except Exception:
+            ssh_user = "-"
+            ssh_pass = "-"
+            plan = "-"
+            expire_date = "-"
+            max_connections = "-"
+
+        restante = format_remaining_from_expire(expire_date)
+
+        lines.append(f"[{i}] 👤 {ssh_user}")
+        lines.append(f"🔑 Password: {ssh_pass}")
+        lines.append(f"📅 Expira: {expire_date}")
+        lines.append(f"⏳ Restante: {restante}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def build_credits_text(telegram_id):
+    accounts = get_user_accounts(telegram_id)
+
+    if accounts:
+        try:
+            expire_date = accounts[0][4]
+            ssh_user = accounts[0][1]
+        except Exception:
+            expire_date = "-"
+            ssh_user = "-"
+
+        restante = format_remaining_from_expire(expire_date)
+
+        return f"""💳 TUS CRÉDITOS
+
+Disponibles: 0/1 ⚫
+👤 Usuario activo: {ssh_user}
+⏳ Próximo crédito en: {restante}
+
+Cada cuenta SSH consume 1 crédito.
+Puedes crear otra cuenta cuando venza tu cuenta activa."""
+
+    return """💳 TUS CRÉDITOS
+
+Disponibles: 1/1 🟢
+⏳ Próximo crédito: disponible ahora
+
+Puedes crear 1 cuenta SSH.
+Cada cuenta es válida por 3 días."""
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clean_expired_accounts()
     context.user_data.clear()
     user_id = update.effective_user.id
+    creditos_txt = get_credit_status(user_id)
 
     tg_name = update.effective_user.first_name or "Usuario"
     tg_username = update.effective_user.username or "sin_usuario"
@@ -377,7 +727,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👤 Nombre: {tg_name}
 🆔 Usuario: @{tg_username}
-💳 Créditos: 1/1 🟢
+💳 Créditos: {creditos_txt}
 
 🌐 Elige acción:
 📅 Cuentas válidas por 3 días
@@ -399,6 +749,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         tg_name = query.from_user.first_name or "Usuario"
         tg_username = query.from_user.username or "sin_usuario"
+        creditos_txt = get_credit_status(user_id)
 
         await query.edit_message_text(
             f"""
@@ -410,7 +761,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👤 Nombre: {tg_name}
 🆔 Usuario: @{tg_username}
-💳 Créditos: 1/1 🟢
+💳 Créditos: {creditos_txt}
 
 🌐 Elige acción:
 📅 Cuentas válidas por 3 días
@@ -420,6 +771,18 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "create_ssh":
         context.user_data.clear()
+
+        accounts = get_user_accounts(user_id)
+
+        if (not is_admin_user(user_id)) and len(accounts) >= 1:
+            await query.edit_message_text(
+                "❌ Sin créditos.\n\n"
+                "⏳ Ya tienes una cuenta activa.\n"
+                "📅 Podrás crear otra cuando se venza la cuenta actual.\n\n"
+                "Usa /start para volver al menú."
+            )
+            return
+
         context.user_data["step"] = "ask_username"
 
         await query.edit_message_text(
@@ -433,27 +796,19 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_menu(),
         )
 
-    elif data == "my_account":
-        plan = "VIP" if is_vip(user_id) else "FREE"
-
-        if plan == "VIP":
-            days = get_setting("vip_days")
-            connections = get_setting("vip_connections")
-            max_accounts = get_setting("vip_max_accounts")
-        else:
-            days = get_setting("free_days")
-            connections = get_setting("free_connections")
-            max_accounts = get_setting("free_max_accounts")
+    elif data == "active_accounts":
+        info = build_active_accounts_text(user_id)
 
         await query.edit_message_text(
-            f"""
-ℹ️ Mi cuenta
+            info,
+            reply_markup=back_menu(),
+        )
 
-📦 Plan: {plan}
-📅 Duración: {days} días
-🔌 Conexiones: {connections}
-👤 Máximo cuentas activas: {max_accounts}
-""",
+    elif data == "my_account":
+        info = build_credits_text(user_id)
+
+        await query.edit_message_text(
+            info,
             reply_markup=back_menu(),
         )
 
@@ -483,8 +838,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📅 Expira: {expire_date}
 🔌 Conexiones: {max_connections}
-📦 Plan: {plan}
-
+📦 
 🌐 Host: {HOST}
 🚪 SSH: {SSH_PORT}
 🌍 WebSocket: {WS_PORT}
@@ -507,7 +861,23 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text(info, reply_markup=back_menu())
 
+
+    elif data == "renew_account":
+        ssh_user, msg = get_active_account_remaining_text(user_id)
+
+        await query.edit_message_text(
+            msg,
+            reply_markup=back_menu(),
+        )
+
     elif data == "admin_panel":
+        if not is_admin_user(user_id):
+            await query.edit_message_text(
+                "⛔ Acceso denegado. Esta opción es solo para administrador.",
+                reply_markup=back_menu(),
+            )
+            return
+
         context.user_data.clear()
 
         if user_id != ADMIN_ID:
@@ -570,6 +940,36 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "➕ Escribe el ID de Telegram para darle VIP:",
             reply_markup=back_admin_menu(),
+        )
+
+
+    elif data.startswith("delssh:"):
+        ssh_user = data.split(":", 1)[1].strip()
+
+        try:
+            delete_registered_ssh_user(ssh_user)
+            msg = f"✅ Usuario eliminado: {ssh_user}\n\n"
+        except Exception as e:
+            msg = f"❌ Error eliminando {ssh_user}:\n{e}\n\n"
+
+        text_del, menu_del = build_delete_ssh_text_and_menu()
+        await query.edit_message_text(
+            msg + text_del,
+            reply_markup=menu_del,
+        )
+
+    elif data == "delete_all_ssh":
+        deleted = delete_all_registered_ssh_users()
+
+        if deleted:
+            msg = "✅ Cuentas eliminadas:\n" + "\n".join(f"- {u}" for u in deleted) + "\n\n"
+        else:
+            msg = "ℹ️ No había cuentas registradas para borrar.\n\n"
+
+        text_del, menu_del = build_delete_ssh_text_and_menu()
+        await query.edit_message_text(
+            msg + text_del,
+            reply_markup=menu_del,
         )
 
     elif data == "remove_vip":
@@ -642,37 +1042,86 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "delete_ssh":
-        if user_id != ADMIN_ID:
-            return
-
         context.user_data.clear()
-        context.user_data["step"] = "delete_ssh"
-
+        text_del, menu_del = build_delete_ssh_text_and_menu()
         await query.edit_message_text(
-            "🗑 Escribe el usuario SSH que quieres eliminar:",
-            reply_markup=back_admin_menu(),
+            text_del,
+            reply_markup=menu_del,
         )
 
 
 
+
 def get_user_accounts(telegram_id):
-    db_file = globals().get("DB_FILE") or globals().get("DB_PATH") or globals().get("DATABASE") or "bot.db"
+    import sqlite3
+    import os
+    import glob
+    from datetime import datetime
 
-    conn = sqlite3.connect(db_file)
-    cur = conn.cursor()
+    today = datetime.now().strftime("%Y-%m-%d")
 
-    try:
-        cur.execute("""
-            SELECT telegram_id, ssh_user, ssh_pass, plan, expire_date, max_connections
-            FROM accounts
-            WHERE telegram_id=?
-        """, (telegram_id,))
-        rows = cur.fetchall()
-    except Exception:
-        rows = []
+    candidates = []
 
-    conn.close()
-    return rows
+    for var in ("DB_FILE", "DB_PATH", "DATABASE", "DB_NAME"):
+        val = globals().get(var)
+        if val:
+            candidates.append(str(val))
+
+    candidates += glob.glob("/opt/darkzsaid-bot/*.db")
+
+    seen = []
+    for db_file in candidates:
+        if db_file and db_file not in seen:
+            seen.append(db_file)
+
+    for db_file in seen:
+        if not os.path.exists(db_file):
+            continue
+
+        try:
+            conn = sqlite3.connect(db_file)
+            cur = conn.cursor()
+
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'")
+            if not cur.fetchone():
+                conn.close()
+                continue
+
+            cur.execute("PRAGMA table_info(accounts)")
+            cols = [row[1] for row in cur.fetchall()]
+
+            if "telegram_id" not in cols:
+                conn.close()
+                continue
+
+            wanted = ["telegram_id", "ssh_user", "ssh_pass", "plan", "expire_date", "max_connections"]
+            select_cols = [c for c in wanted if c in cols]
+
+            if not select_cols:
+                select_cols = ["*"]
+
+            sql = f"SELECT {', '.join(select_cols)} FROM accounts WHERE telegram_id=?"
+            params = [telegram_id]
+
+            if "expire_date" in cols:
+                sql += " AND expire_date >= ?"
+                params.append(today)
+
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+            conn.close()
+
+            if rows:
+                return rows
+
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            continue
+
+    return []
 
 
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -729,24 +1178,30 @@ Reglas:
             return
 
         username = context.user_data["ssh_username"]
-        plan = "VIP" if is_vip(user_id) else "FREE"
-
-        if plan == "VIP":
-            days = get_setting("vip_days")
+        if is_admin_user(user_id):
+            plan = "ADMIN"
+            days = 30
             connections = get_setting("vip_connections")
-            max_accounts = get_setting("vip_max_accounts")
+            max_accounts = 999999
         else:
-            days = get_setting("free_days")
-            connections = get_setting("free_connections")
-            max_accounts = get_setting("free_max_accounts")
+            plan = "VIP" if is_vip(user_id) else "FREE"
+
+            if plan == "VIP":
+                days = get_setting("vip_days")
+                connections = get_setting("vip_connections")
+                max_accounts = get_setting("vip_max_accounts")
+            else:
+                days = get_setting("free_days")
+                connections = get_setting("free_connections")
+                max_accounts = get_setting("free_max_accounts")
 
         accounts = get_user_accounts(user_id)
 
-        if len(accounts) >= int(max_accounts):
+        if (not is_admin_user(user_id)) and len(accounts) >= 1:
             await update.message.reply_text(
-                """❌ Ya alcanzaste el máximo de cuentas permitidas.
+                """❌ Ya usaste tu crédito disponible.
 
-Cuando tu cuenta venza, podrás crear otra.""",
+Cuando tu cuenta venza, podrás crear otra cuenta.""",
                 reply_markup=back_menu(),
             )
             context.user_data.clear()
@@ -777,8 +1232,6 @@ Password: {password}
 
 📅 EXPIRACIÓN:
 Fecha: {expire_show} ({days} días)
-Conexiones: {connections}
-Plan: {plan}
 
 🌐 SERVIDOR:
 IP:             {HOST}
@@ -810,10 +1263,9 @@ Dominio Flare:  {dominio_flare}
 {dominio_flare}:443@{username}:{password}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-NS: —
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💳 Créditos restantes: 0/1
-⏰ Regen: +1 crédito cada 24h
+⏰ Regen: +1 crédito cuando venza tu cuenta
+📅 Tiempo de espera: 3 días
 Creado por @DarkZsaid
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
