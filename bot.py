@@ -221,11 +221,14 @@ def linux_user_exists(username):
 def create_linux_user(username, password, expire_date, max_connections):
     subprocess.run(["useradd", "-M", "-s", "/bin/false", username], check=True)
 
-    subprocess.run(
-        ["chpasswd"],
-        input=f"{username}:{password}".encode(),
+    hash_result = subprocess.run(
+        ["openssl", "passwd", "-6", password],
+        capture_output=True,
+        text=True,
         check=True,
     )
+    password_hash = hash_result.stdout.strip()
+    subprocess.run(["usermod", "-p", password_hash, username], check=True)
 
     subprocess.run(["chage", "-E", expire_date, username], check=True)
 
@@ -355,6 +358,31 @@ def back_admin_menu():
     ])
 
 
+
+# ===== DARKZSAID DOMAIN CONFIG =====
+DOMAIN_FILE = "/opt/darkzsaid-bot/domain_cloudflare.txt"
+DEFAULT_CLOUDFLARE_DOMAIN = "bot-telegram.scionvps.fun"
+
+def get_cloudflare_domain():
+    try:
+        with open(DOMAIN_FILE, "r") as f:
+            domain = f.read().strip()
+            if domain:
+                return domain
+    except Exception:
+        pass
+    return DEFAULT_CLOUDFLARE_DOMAIN
+
+def save_cloudflare_domain(domain):
+    domain = domain.strip()
+    domain = domain.replace("https://", "").replace("http://", "").strip("/")
+    if not domain or " " in domain or "." not in domain:
+        return False
+    with open(DOMAIN_FILE, "w") as f:
+        f.write(domain + "\n")
+    return True
+# ===== END DARKZSAID DOMAIN CONFIG =====
+
 def admin_menu():
     keyboard = [
         [
@@ -376,6 +404,7 @@ def admin_menu():
         [InlineKeyboardButton("🏠 Menú principal", callback_data="back")],
     ]
 
+    keyboard.append([InlineKeyboardButton("Cambiar dominio Cloudflare", callback_data="set_domain")])
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -709,6 +738,38 @@ Puedes crear 1 cuenta SSH.
 Cada cuenta es válida por 3 días."""
 
 
+
+async def set_domain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("Acceso denegado. Solo administrador.")
+        return
+
+    if not context.args:
+        actual = get_cloudflare_domain()
+        await update.message.reply_text(
+            f"Dominio Cloudflare actual:\n{actual}\n\n"
+            "Para cambiarlo usa:\n"
+            "/dominio nuevo-dominio.com"
+        )
+        return
+
+    nuevo = context.args[0].strip()
+
+    if not save_cloudflare_domain(nuevo):
+        await update.message.reply_text(
+            "Dominio invalido.\n\n"
+            "Ejemplo correcto:\n"
+            "/dominio mi-dominio.com"
+        )
+        return
+
+    await update.message.reply_text(
+        f"Dominio Cloudflare actualizado correctamente:\n{get_cloudflare_domain()}"
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clean_expired_accounts()
     context.user_data.clear()
@@ -891,6 +952,26 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👑 {PANEL_NAME}",
             reply_markup=admin_menu(),
         )
+
+
+    elif data == "set_domain":
+        if user_id != ADMIN_ID:
+            return
+
+        dominio_actual = get_cloudflare_domain()
+        text = f"""CONFIGURAR DOMINIO CLOUDFLARE
+
+Dominio actual:
+{dominio_actual}
+
+Para cambiarlo escribe:
+
+/dominio nuevo-dominio.com
+
+Ejemplo:
+/dominio mi-vps.cloudflare.com
+"""
+        await query.edit_message_text(text, reply_markup=back_admin_menu())
 
     elif data == "config_free":
         if user_id != ADMIN_ID:
@@ -1213,7 +1294,7 @@ Cuando tu cuenta venza, podrás crear otra cuenta.""",
             create_linux_user(username, password, expire_date, connections)
             save_account(user_id, username, password, plan, expire_date, connections)
 
-            dominio_flare = "bot-telegram.scionvps.fun"
+            dominio_flare = get_cloudflare_domain()
 
             try:
                 expire_show = datetime.strptime(expire_date, "%Y-%m-%d").strftime("%d/%m/%Y")
@@ -1295,13 +1376,11 @@ def main():
     init_db()
     update_db_columns()
     clean_expired_accounts()
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
+    app.add_handler(CommandHandler("dominio", set_domain_command))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
-
     print(f"{BOT_NAME} iniciado...")
     app.run_polling()
 
