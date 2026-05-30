@@ -1,0 +1,13 @@
+INSTALADOR OFICIAL BOT DARKZSAID
+
+Ejecutar en VPS como root:
+
+cd /root && rm -rf /tmp/darkzsaid-bot-install && git clone https://github.com/DarkZsaid/DarkZsaid-bot.git /tmp/darkzsaid-bot-install && cd /tmp/darkzsaid-bot-install && chmod +x install.sh && bash install.sh
+
+Revisar servicio:
+
+systemctl status darkzsaid-bot --no-pager
+
+Ver logs:
+
+journalctl -u darkzsaid-bot --no-pager -n 50
