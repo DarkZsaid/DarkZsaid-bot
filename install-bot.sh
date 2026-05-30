@@ -10,7 +10,7 @@ BLANCO="\e[97m"
 RESET="\e[0m"
 BOLD="\e[1m"
 
-REPO_URL="https://github.com/stevenjosecarcamo-star/DarkZsaid-bot.git"
+REPO_URL="https://github.com/DarkZsaid/DarkZsaid-bot.git"
 BOT_DIR="/opt/darkzsaid-bot"
 SERVICE_NAME="darkzsaid-bot"
 
