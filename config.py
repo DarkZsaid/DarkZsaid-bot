@@ -9,7 +9,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 BOT_NAME = os.getenv("BOT_NAME", "DarkZsaid SSH Bot")
 PANEL_NAME = os.getenv("PANEL_NAME", "DarkZsaid")
 
-HOST = os.getenv("HOST", "127.0.0.1")
+HOST = os.getenv("HOST", os.getenv("SERVER_IP", "127.0.0.1"))
 SSH_PORT = int(os.getenv("SSH_PORT", "22"))
 WS_PORT = int(os.getenv("WS_PORT", "80"))
 SSL_PORT = int(os.getenv("SSL_PORT", "443"))
